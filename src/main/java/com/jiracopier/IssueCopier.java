@@ -8,26 +8,33 @@ import com.atlassian.jira.rest.client.api.domain.input.IssueInput;
 import com.atlassian.jira.rest.client.api.domain.input.IssueInputBuilder;
 import io.atlassian.util.concurrent.Promise;
 
+import java.util.function.Consumer;
+
 public class IssueCopier {
 
     private final JiraRestClient sourceJiraClient;
     private final JiraRestClient targetJiraClient;
+    private final Consumer<String> logger;
 
-    public IssueCopier(JiraRestClient sourceJiraClient, JiraRestClient targetJiraClient) {
+    /**
+     * @param logger A consumer for log messages to be displayed in the UI.
+     */
+    public IssueCopier(JiraRestClient sourceJiraClient, JiraRestClient targetJiraClient, Consumer<String> logger) {
         this.sourceJiraClient = sourceJiraClient;
         this.targetJiraClient = targetJiraClient;
+        this.logger = logger != null ? logger : (message) -> {}; // Avoid NullPointerException
     }
 
     public void copyIssue(String sourceIssueKey, String targetProjectKey, String targetIssueTypeName) {
         try {
             // 1. Fetch the source issue
-            System.out.println("Fetching issue '" + sourceIssueKey + "' from source JIRA...");
+            log("Fetching issue '" + sourceIssueKey + "' from source JIRA...");
             Promise<Issue> getIssuePromise = sourceJiraClient.getIssueClient().getIssue(sourceIssueKey);
             Issue sourceIssue = getIssuePromise.claim();
-            System.out.println("-> Fetched issue: " + sourceIssue.getSummary());
+            log("-> Fetched issue: " + sourceIssue.getSummary());
 
             // 2. Get the Issue Type ID from the target instance
-            System.out.println("Fetching issue types from target JIRA...");
+            log("Fetching issue types from target JIRA...");
             Promise<Iterable<IssueType>> issueTypesPromise = targetJiraClient.getMetadataClient().getIssueTypes();
             Long issueTypeId = null;
             for (IssueType issueType : issueTypesPromise.claim()) {
@@ -38,10 +45,9 @@ public class IssueCopier {
             }
 
             if (issueTypeId == null) {
-                System.err.println("Error: Issue Type '" + targetIssueTypeName + "' not found in target JIRA.");
-                return;
+                throw new RuntimeException("Error: Issue Type '" + targetIssueTypeName + "' not found in target JIRA.");
             }
-            System.out.println("-> Found issue type '" + targetIssueTypeName + "' with ID: " + issueTypeId);
+            log("-> Found issue type '" + targetIssueTypeName + "' with ID: " + issueTypeId);
 
             // 3. Prepare the new issue for the target Jira
             String summary = sourceIssue.getSummary();
@@ -53,15 +59,20 @@ public class IssueCopier {
             IssueInput newIssue = issueInputBuilder.build();
 
             // 4. Create the issue in the target Jira
-            System.out.println("Creating new issue in target JIRA...");
+            log("Creating new issue in target JIRA...");
             Promise<BasicIssue> createIssuePromise = targetJiraClient.getIssueClient().createIssue(newIssue);
             BasicIssue createdIssue = createIssuePromise.claim();
 
-            System.out.println("-> Successfully created issue in target JIRA: " + createdIssue.getKey());
+            log("-> Successfully created issue in target JIRA: " + createdIssue.getKey());
 
         } catch (Exception e) {
-            System.err.println("An error occurred while copying the issue: " + e.getMessage());
-            e.printStackTrace();
+            log("An error occurred while copying the issue: " + e.getMessage());
+            // Re-throw as a runtime exception to be caught by the SwingWorker
+            throw new RuntimeException(e);
         }
+    }
+
+    private void log(String message) {
+        this.logger.accept(message);
     }
 }
