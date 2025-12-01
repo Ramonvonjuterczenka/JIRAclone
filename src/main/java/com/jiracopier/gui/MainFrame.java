@@ -270,6 +270,12 @@ public class MainFrame extends JFrame {
                 try {
                     IssueDataPayload payload = get();
                     issueEditorPanel.populateData(payload.issue, payload.priorities);
+
+                    // Set the target issue type from the source issue
+                    String sourceIssueTypeName = payload.issue.getIssueType().getName();
+                    targetIssueTypeField.setText(sourceIssueTypeName);
+                    flashComponent(targetIssueTypeField);
+
                     issueEditorPanel.setVisible(true);
                     pack(); // Adjust frame size to fit the new panel
                     statusArea.append("Issue data loaded successfully.\n");
