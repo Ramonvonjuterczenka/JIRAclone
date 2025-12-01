@@ -3,6 +3,7 @@ package com.jiracopier.gui;
 import com.atlassian.jira.rest.client.api.JiraRestClient;
 import com.atlassian.jira.rest.client.api.domain.Issue;
 import com.atlassian.jira.rest.client.api.domain.Priority;
+import com.atlassian.jira.rest.client.api.domain.SearchResult;
 import com.atlassian.jira.rest.client.api.domain.input.IssueInput;
 import com.atlassian.jira.rest.client.api.domain.input.IssueInputBuilder;
 import com.google.common.collect.Lists;
@@ -12,6 +13,8 @@ import com.jiracopier.JiraClientFactory;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -57,6 +60,7 @@ public class MainFrame extends JFrame {
     private final JTextField sourceIssueKeyField = new JTextField(15);
     private final JTextField targetProjectKeyField = new JTextField(15);
     private final JTextField targetIssueTypeField = new JTextField(15);
+    private final JTextField prospectiveTargetKeyField = new JTextField(15);
     private final JTextField proxyHostField = new JTextField(30);
     private final JTextField proxyPortField = new JTextField(5);
     private final JButton copyButton = new JButton("Copy Issue");
@@ -64,6 +68,7 @@ public class MainFrame extends JFrame {
 
     private IssueEditorPanel issueEditorPanel;
     private JButton loadIssueButton;
+    private JButton checkNextKeyButton;
 
     public MainFrame() {
         super("JIRA Issue Copier");
@@ -81,6 +86,7 @@ public class MainFrame extends JFrame {
         statusArea.setEditable(false);
         statusArea.setLineWrap(true);
         statusArea.setWrapStyleWord(true);
+        prospectiveTargetKeyField.setEditable(false);
 
         sourceUrlField = new JTextField(30);
         targetUrlField = new JTextField(30);
@@ -88,6 +94,7 @@ public class MainFrame extends JFrame {
         targetAuthPanel = new AuthPanel();
         issueEditorPanel = new IssueEditorPanel();
         loadIssueButton = new JButton("Load Issue");
+        checkNextKeyButton = new JButton("Check Next Key");
     }
 
     private void layoutComponents() {
@@ -107,9 +114,14 @@ public class MainFrame extends JFrame {
         sourceIssuePanel.add(sourceIssueKeyField, BorderLayout.CENTER);
         sourceIssuePanel.add(loadIssueButton, BorderLayout.EAST);
 
+        JPanel targetProjectPanel = new JPanel(new BorderLayout(5, 0));
+        targetProjectPanel.add(targetProjectKeyField, BorderLayout.CENTER);
+        targetProjectPanel.add(checkNextKeyButton, BorderLayout.EAST);
+
         addLabeledComponent(issuePanel, "Source Issue Key:", sourceIssuePanel, 0);
-        addLabeledComponent(issuePanel, "Target Project Key:", targetProjectKeyField, 1);
+        addLabeledComponent(issuePanel, "Target Project Key:", targetProjectPanel, 1);
         addLabeledComponent(issuePanel, "Target Issue Type:", targetIssueTypeField, 2);
+        addLabeledComponent(issuePanel, "Prospective Target Key:", prospectiveTargetKeyField, 3);
 
         addLabeledComponent(proxyPanel, "Proxy Host:", proxyHostField, 0);
         addLabeledComponent(proxyPanel, "Proxy Port:", proxyPortField, 1);
@@ -148,6 +160,7 @@ public class MainFrame extends JFrame {
         sourceAuthPanel.addTestConnectionListener(e -> testJiraConnection("Source", sourceUrlField, sourceAuthPanel));
         targetAuthPanel.addTestConnectionListener(e -> testJiraConnection("Target", targetUrlField, targetAuthPanel));
         loadIssueButton.addActionListener(e -> loadIssueData());
+        checkNextKeyButton.addActionListener(e -> checkNextTargetKey());
     }
 
     private void loadConfiguration() {
@@ -271,6 +284,66 @@ public class MainFrame extends JFrame {
         worker.execute();
     }
 
+    private void checkNextTargetKey() {
+        checkNextKeyButton.setEnabled(false);
+        SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
+            @Override
+            protected String doInBackground() throws Exception {
+                String projectKey = targetProjectKeyField.getText().trim();
+                if (projectKey.isEmpty()) {
+                    return "Error: Target Project Key is required.";
+                }
+
+                String proxyHost = proxyHostField.getText();
+                int proxyPort = 0;
+                if (proxyHost != null && !proxyHost.trim().isEmpty()) {
+                    try {
+                        proxyPort = Integer.parseInt(proxyPortField.getText());
+                    } catch (NumberFormatException ex) {
+                        return "Error: Invalid proxy port.";
+                    }
+                }
+
+                try (JiraRestClient targetClient = targetAuthPanel.createClient(targetUrlField.getText(), proxyHost, proxyPort)) {
+                    String jql = "project = \"" + projectKey + "\" ORDER BY issuekey DESC";
+                    SearchResult result = targetClient.getSearchClient().searchJql(jql, 1, 0, null).claim();
+                    if (result.getTotal() == 0) {
+                        return projectKey + "-1";
+                    } else {
+                        Issue latestIssue = result.getIssues().iterator().next();
+                        String latestKey = latestIssue.getKey();
+                        String[] parts = latestKey.split("-");
+                        if (parts.length == 2) {
+                            int number = Integer.parseInt(parts[1]);
+                            return parts[0] + "-" + (number + 1);
+                        }
+                        return "Error: Could not parse key " + latestKey;
+                    }
+                } catch (Exception e) {
+                    return "Error: " + e.getMessage();
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    String result = get();
+                    if (result.startsWith("Error:")) {
+                        JOptionPane.showMessageDialog(MainFrame.this, result, "Error", JOptionPane.ERROR_MESSAGE);
+                    } else {
+                        prospectiveTargetKeyField.setText(result);
+                        flashComponent(prospectiveTargetKeyField);
+                    }
+                } catch (Exception e) {
+                    JOptionPane.showMessageDialog(MainFrame.this, "Failed to get next key: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                } finally {
+                    checkNextKeyButton.setEnabled(true);
+                }
+            }
+        };
+        worker.execute();
+    }
+
 
     private void startCopyProcess() {
         saveConfiguration();
@@ -320,6 +393,33 @@ public class MainFrame extends JFrame {
         };
 
         worker.execute();
+    }
+
+    private void flashComponent(JComponent component) {
+        final Color originalColor = component.getBackground();
+        final Color flashColor = new Color(255, 150, 150); // Light red
+        final int flashDuration = 150; // ms
+        final int totalDuration = 1000; // ms
+
+        Timer flashTimer = new Timer(flashDuration, new ActionListener() {
+            private long startTime = -1;
+
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (startTime < 0) {
+                    startTime = System.currentTimeMillis();
+                }
+                long elapsed = System.currentTimeMillis() - startTime;
+                if (elapsed >= totalDuration) {
+                    component.setBackground(originalColor);
+                    ((Timer) e.getSource()).stop();
+                } else {
+                    component.setBackground(component.getBackground() == flashColor ? originalColor : flashColor);
+                }
+            }
+        });
+        flashTimer.setRepeats(true);
+        flashTimer.start();
     }
 
     private JPanel createSectionPanel(String title) {
